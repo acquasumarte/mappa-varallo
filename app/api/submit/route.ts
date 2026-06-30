@@ -4,24 +4,37 @@ import { Readable } from "stream";
 
 export const runtime = "nodejs";
 
-function getAuth() {
+function getSheetsAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   // Le chiavi private nelle env var di Vercel vanno spesso salvate con \n letterali:
   // questa riga li converte in newline reali.
   const key = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
 
   if (!email || !key) {
-    throw new Error("Credenziali Google mancanti nelle variabili d'ambiente");
+    throw new Error("Credenziali Service Account mancanti nelle variabili d'ambiente");
   }
 
   return new google.auth.JWT({
     email,
     key,
-    scopes: [
-      "https://www.googleapis.com/auth/drive",
-      "https://www.googleapis.com/auth/spreadsheets",
-    ],
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
+}
+
+function getDriveAuth() {
+  // I Service Account non hanno quota di archiviazione su Drive personali, quindi per
+  // caricare i file usiamo OAuth a nome del tuo vero account Google (quota tua).
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error("Credenziali OAuth Drive mancanti nelle variabili d'ambiente");
+  }
+
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return oauth2Client;
 }
 
 export async function POST(req: NextRequest) {
@@ -33,9 +46,8 @@ export async function POST(req: NextRequest) {
     const testo = (formData.get("testo") as string) || "";
     const file = formData.get("media") as File | null;
 
-    const auth = getAuth();
-    const drive = google.drive({ version: "v3", auth });
-    const sheets = google.sheets({ version: "v4", auth });
+    const drive = google.drive({ version: "v3", auth: getDriveAuth() });
+    const sheets = google.sheets({ version: "v4", auth: getSheetsAuth() });
 
     const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
     const sheetId = process.env.GOOGLE_SHEET_ID;
