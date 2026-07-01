@@ -28,21 +28,30 @@ function getDriveAuth() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { fileId, mimeType, autore, zona, luogo, testo } = await req.json();
+    const { safeName, mimeType, autore, zona, luogo, testo } = await req.json();
     const sheetId = process.env.GOOGLE_SHEET_ID;
     if (!sheetId) throw new Error("GOOGLE_SHEET_ID mancante");
 
     const drive = google.drive({ version: "v3", auth: getDriveAuth() });
     const sheets = google.sheets({ version: "v4", auth: getSheetsAuth() });
 
+    // Cerca il file su Drive per nome (il browser non riesce a leggere il fileId per CORS)
+    const search = await drive.files.list({
+      q: `name = '${safeName}' and trashed = false`,
+      fields: "files(id, webViewLink)",
+      pageSize: 1,
+    });
+
+    const found = search.data.files?.[0];
+    if (!found?.id) throw new Error("File non ancora trovato su Drive, riprova tra qualche secondo");
+
     // Rende il file pubblico (visibile a chiunque abbia il link)
     await drive.permissions.create({
-      fileId,
+      fileId: found.id,
       requestBody: { role: "reader", type: "anyone" },
     });
 
-    const fileMeta = await drive.files.get({ fileId, fields: "webViewLink" });
-    const fileLink = fileMeta.data.webViewLink || "";
+    const fileLink = found.webViewLink || "";
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: sheetId,

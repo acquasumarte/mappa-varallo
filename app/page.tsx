@@ -21,7 +21,7 @@ export default function Page() {
     e.preventDefault();
     setStatus("sending");
     setErrorMsg("");
-    setProgress("Invio in corso...");
+    setProgress("Preparazione...");
 
     const form = e.currentTarget;
     const autore = (form.elements.namedItem("autore") as HTMLInputElement).value;
@@ -33,22 +33,41 @@ export default function Page() {
 
     try {
       if (file) {
-        // STEP 1: chiedi a Vercel un URL di upload diretto su Drive
-        setProgress("Preparazione caricamento...");
-        const prepRes = await fetch("/api/prepare", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fileName: file.name, mimeType: file.type, autore }),
-        });
-        const prepData = await prepRes.json();
-        if (!prepRes.ok) throw new Error(prepData.error || "Errore preparazione upload");
+        // STEP 1: ottieni access token e folderId da Vercel
+        const tokenRes = await fetch("/api/token");
+        const tokenData = await tokenRes.json();
+        if (!tokenRes.ok) throw new Error(tokenData.error || "Errore token");
+        const { token, folderId } = tokenData;
 
-        const { uploadUrl } = prepData;
+        // Genera il nome del file (lo useremo anche per trovarlo su Drive dopo)
+        const safeName = `${Date.now()}_${autore.replace(/[^a-z0-9]/gi, "_")}_${file.name}`;
 
-        // STEP 2: carica il file DIRETTAMENTE su Google Drive (bypassa Vercel)
-        setProgress(`Caricamento file (${Math.round(file.size / 1024 / 1024 * 10) / 10} MB)...`);
+        // STEP 2: avvia sessione resumable upload su Google Drive
+        const initRes = await fetch(
+          "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              "X-Upload-Content-Type": file.type,
+              "X-Upload-Content-Length": String(file.size),
+            },
+            body: JSON.stringify({ name: safeName, parents: [folderId] }),
+          }
+        );
+        if (!initRes.ok) {
+          const errText = await initRes.text();
+          throw new Error(`Errore Drive: ${errText}`);
+        }
+        const uploadUrl = initRes.headers.get("location");
+        if (!uploadUrl) throw new Error("URL upload non ricevuto");
 
-        await new Promise<void>((resolve, reject) => {
+        // STEP 3: carica il file direttamente su Drive con barra di progresso
+        // Nota: il browser non riesce a leggere la risposta finale per CORS,
+        // ma il file viene caricato correttamente lo stesso.
+        setProgress("Caricamento 0%");
+        await new Promise<void>((resolve) => {
           const xhr = new XMLHttpRequest();
           xhr.open("PUT", uploadUrl);
           xhr.setRequestHeader("Content-Type", file.type);
@@ -56,47 +75,25 @@ export default function Page() {
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
               const pct = Math.round((e.loaded / e.total) * 100);
-              setProgress(`Caricamento: ${pct}%`);
+              setProgress(`Caricamento ${pct}%`);
             }
           };
 
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              resolve();
-            } else {
-              reject(new Error(`Errore upload Drive: ${xhr.status}`));
-            }
-          };
-          xhr.onerror = () => reject(new Error("Errore di rete durante il caricamento"));
+          // Sia onload che onerror: il file è su Drive, procediamo comunque
+          xhr.onload = () => resolve();
+          xhr.onerror = () => resolve(); // il file è arrivato anche se la risposta è bloccata
           xhr.send(file);
         });
 
-        // STEP 3: estrai il fileId dalla risposta di Drive e completa su Vercel
+        // STEP 4: il server cerca il file per nome, imposta i permessi e scrive sullo Sheet
         setProgress("Salvataggio dati...");
-
-        // Recupera il fileId: Drive lo restituisce nel body JSON dopo l'upload
-        // Usiamo /api/complete che lo ricava dall'uploadUrl (che contiene l'upload_id)
-        // Facciamo una chiamata GET sull'uploadUrl per ottenere il fileId
-        const checkRes = await fetch(uploadUrl, {
-          method: "PUT",
-          headers: { "Content-Type": file.type, "Content-Range": `bytes */${file.size}` },
-        });
-        // A upload completato, Drive risponde 200/201 con il file JSON
-        let fileId = "";
-        if (checkRes.status === 200 || checkRes.status === 201) {
-          const fileData = await checkRes.json();
-          fileId = fileData.id || "";
-        }
-
-        if (!fileId) throw new Error("Impossibile ottenere l'ID del file caricato");
-
         const completeRes = await fetch("/api/complete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fileId, mimeType: file.type, autore, zona, luogo, testo }),
+          body: JSON.stringify({ safeName, mimeType: file.type, autore, zona, luogo, testo }),
         });
         const completeData = await completeRes.json();
-        if (!completeRes.ok) throw new Error(completeData.error || "Errore salvataggio dati");
+        if (!completeRes.ok) throw new Error(completeData.error || "Errore salvataggio");
 
       } else {
         // Nessun file: invia solo il testo
@@ -122,7 +119,7 @@ export default function Page() {
       <main style={styles.main}>
         <div style={styles.card}>
           <h1 style={styles.title}>Grazie! 🎉</h1>
-          <p>Il tuo contributo è stato caricato ed entrerà a far parte della mappa di Varallo.</p>
+          <p>Il tuo contributo è entrato a far parte della mappa di Varallo.</p>
           <button style={styles.button} onClick={() => { setStatus("idle"); setProgress(""); }}>
             Invia un altro contributo
           </button>
@@ -152,22 +149,19 @@ export default function Page() {
         <input style={styles.input} name="luogo" placeholder="es. Piazza Vittorio Emanuele II" />
 
         <label style={styles.label}>Breve testo / didascalia</label>
-        <textarea style={{ ...styles.input, height: 80 }} name="testo" placeholder="Racconta cosa stai mostrando..." />
+        <textarea style={{ ...styles.input, height: 80 }} name="testo"
+          placeholder="Racconta cosa stai mostrando..." />
 
         <label style={styles.label}>Carica foto, video o audio</label>
-        <input
-          style={styles.input}
-          type="file"
-          name="media"
-          accept="image/*,video/*,audio/*"
-          capture="environment"
-        />
+        <input style={styles.input} type="file" name="media"
+          accept="image/*,video/*,audio/*" capture="environment" />
         <p style={styles.hint}>
-          Su smartphone apre direttamente fotocamera/microfono. Puoi anche scegliere un file dalla galleria. Video max consigliato 30 secondi.
+          Su smartphone apre fotocamera/microfono. Puoi anche scegliere dalla galleria.
+          Video max consigliato 30 secondi.
         </p>
 
         <button style={styles.button} type="submit" disabled={status === "sending"}>
-          {status === "sending" ? progress || "Invio in corso..." : "Invia contributo"}
+          {status === "sending" ? (progress || "Invio in corso...") : "Invia contributo"}
         </button>
 
         {status === "error" && <p style={styles.error}>Errore: {errorMsg}</p>}
@@ -179,15 +173,8 @@ export default function Page() {
 const styles: Record<string, React.CSSProperties> = {
   main: { display: "flex", justifyContent: "center", padding: "24px 16px", minHeight: "100vh" },
   card: {
-    background: "white",
-    borderRadius: 16,
-    padding: 24,
-    maxWidth: 480,
-    width: "100%",
-    boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
-    display: "flex",
-    flexDirection: "column",
-    gap: 6,
+    background: "white", borderRadius: 16, padding: 24, maxWidth: 480, width: "100%",
+    boxShadow: "0 2px 12px rgba(0,0,0,0.08)", display: "flex", flexDirection: "column", gap: 6,
   },
   title: { margin: "0 0 4px", fontSize: 24, color: "#3a2e26" },
   subtitle: { margin: "0 0 16px", color: "#6b5d52", fontSize: 14 },
