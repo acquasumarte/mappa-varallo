@@ -15,14 +15,34 @@ function getSheetsAuth() {
   });
 }
 
-// Endpoint usato solo quando non c'è nessun file allegato (solo testo)
+function getDriveAuth() {
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
+  if (!clientId || !clientSecret || !refreshToken)
+    throw new Error("Credenziali OAuth Drive mancanti");
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return oauth2Client;
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { autore, zona, luogo, testo } = await req.json();
+    const { fileId, mimeType, autore, zona, luogo, testo } = await req.json();
     const sheetId = process.env.GOOGLE_SHEET_ID;
     if (!sheetId) throw new Error("GOOGLE_SHEET_ID mancante");
 
+    const drive = google.drive({ version: "v3", auth: getDriveAuth() });
     const sheets = google.sheets({ version: "v4", auth: getSheetsAuth() });
+
+    // Rende il file pubblico (visibile a chiunque abbia il link)
+    await drive.permissions.create({
+      fileId,
+      requestBody: { role: "reader", type: "anyone" },
+    });
+
+    const fileMeta = await drive.files.get({ fileId, fields: "webViewLink" });
+    const fileLink = fileMeta.data.webViewLink || "";
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: sheetId,
@@ -31,12 +51,12 @@ export async function POST(req: NextRequest) {
       requestBody: {
         values: [[
           new Date().toLocaleString("it-IT", { timeZone: "Europe/Rome" }),
-          autore, zona, luogo, testo, "", "",
+          autore, zona, luogo, testo, mimeType, fileLink,
         ]],
       },
     });
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, fileLink });
   } catch (err: any) {
     console.error(err);
     return NextResponse.json({ error: err.message || "Errore interno" }, { status: 500 });
