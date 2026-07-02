@@ -2,8 +2,6 @@
 
 import { useEffect, useState, useRef } from "react";
 
-// Coordinate centrali delle zone di Varallo Sesia
-// (longitudine, latitudine in sistema proiettato su canvas)
 const ZONE_COORDS: Record<string, [number, number]> = {
   "Centro storico":       [0.50, 0.48],
   "Sacro Monte":          [0.54, 0.28],
@@ -14,8 +12,6 @@ const ZONE_COORDS: Record<string, [number, number]> = {
   "Altro":                [0.50, 0.50],
 };
 
-// Geocoding approssimativo di indirizzi noti a Varallo
-// (estendibile — se non trovato usa la zona)
 const ADDR_HINTS: Array<{ keywords: string[]; pos: [number, number] }> = [
   { keywords: ["vittorio", "piazza", "emanuele"], pos: [0.50, 0.47] },
   { keywords: ["sacro", "monte"],                 pos: [0.54, 0.28] },
@@ -29,13 +25,10 @@ function resolvePosition(zona: string, luogo: string): [number, number] {
   if (luogo) {
     const lower = luogo.toLowerCase();
     for (const hint of ADDR_HINTS) {
-      if (hint.keywords.some((k) => lower.includes(k))) {
-        return hint.pos;
-      }
+      if (hint.keywords.some((k) => lower.includes(k))) return hint.pos;
     }
   }
   const base = ZONE_COORDS[zona] ?? [0.50, 0.50];
-  // piccola dispersione casuale (ripetibile per lo stesso contributo)
   const seed = zona.charCodeAt(0) + (luogo?.charCodeAt(0) ?? 0);
   const dx = ((seed * 17) % 40 - 20) / 1000;
   const dy = ((seed * 31) % 40 - 20) / 1000;
@@ -54,15 +47,13 @@ interface Contributo {
   pos: [number, number];
 }
 
-// Legge il Google Sheet come CSV pubblico
 async function fetchContributi(sheetId: string): Promise<Contributo[]> {
   const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=Foglio1`;
   const res = await fetch(url);
   const text = await res.text();
-  const lines = text.trim().split("\n").slice(1); // salta intestazione
+  const lines = text.trim().split("\n").slice(1);
   return lines
     .map((line, i) => {
-      // parsing CSV base (gestisce virgolette)
       const cols = line.match(/(".*?"|[^,]+)(?=,|$)/g)?.map((c) =>
         c.replace(/^"|"$/g, "").replace(/""/g, '"').trim()
       ) ?? [];
@@ -88,12 +79,60 @@ function getFileId(link: string): string | null {
   return m ? m[1] : null;
 }
 
-function getThumbnailUrl(link: string, tipoFile: string): string | null {
-  if (!link) return null;
-  const id = getFileId(link);
-  if (!id) return null;
-  if (tipoFile.startsWith("image/")) return `https://drive.google.com/thumbnail?id=${id}&sz=w800`;
-  if (tipoFile.startsWith("video/")) return `https://drive.google.com/thumbnail?id=${id}&sz=w800`;
+// Componente media: usa sempre iframe di Drive che funziona per foto, video e audio
+function DriveMedia({ contributo }: { contributo: Contributo }) {
+  const fileId = getFileId(contributo.link);
+  const tipo = contributo.tipoFile;
+
+  if (!fileId) return null;
+
+  if (tipo.startsWith("image/")) {
+    // Per le immagini usiamo il tag img direttamente con l'URL di download pubblico
+    return (
+      <img
+        src={`https://drive.google.com/uc?export=view&id=${fileId}`}
+        alt=""
+        style={s.mediaImg}
+      />
+    );
+  }
+
+  if (tipo.startsWith("video/")) {
+    return (
+      <iframe
+        src={`https://drive.google.com/file/d/${fileId}/preview?autoplay=1`}
+        style={s.mediaFrame}
+        allow="autoplay; fullscreen"
+        allowFullScreen
+      />
+    );
+  }
+
+  if (tipo.startsWith("audio/")) {
+    return (
+      <div style={s.audioBox}>
+        <div style={s.audioWaveform}>
+          {Array.from({ length: 18 }).map((_, i) => (
+            <div
+              key={i}
+              style={{
+                ...s.audioBar,
+                height: `${20 + Math.sin(i * 1.3) * 16 + Math.cos(i * 0.7) * 10}px`,
+                animationDelay: `${i * 0.1}s`,
+              }}
+            />
+          ))}
+        </div>
+        <iframe
+          src={`https://drive.google.com/file/d/${fileId}/preview`}
+          style={s.audioFrame}
+          allow="autoplay"
+        />
+        <p style={s.audioLabel}>registrazione audio</p>
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -111,7 +150,6 @@ export default function MappaPage() {
     });
   }, [sheetId]);
 
-  // Ciclo automatico
   useEffect(() => {
     if (contributi.length === 0) return;
 
@@ -126,7 +164,7 @@ export default function MappaPage() {
           timerRef.current = setTimeout(() => {
             setPhase("fade");
             timerRef.current = setTimeout(next, 1500);
-          }, 9000);
+          }, 12000); // 12 secondi per contenuto — abbastanza per guardare foto/ascoltare audio
         }, 800);
       }, 3000);
     }
@@ -136,127 +174,91 @@ export default function MappaPage() {
   }, [contributi]);
 
   const current = active !== null ? contributi[active] : null;
-  const thumb = current ? getThumbnailUrl(current.link, current.tipoFile) : null;
-  const isAudio = current?.tipoFile?.startsWith("audio/");
-  const isVideo = current?.tipoFile?.startsWith("video/");
-  const fileId = current ? getFileId(current.link) : null;
+  const hasMedia = !!(current?.link && current?.tipoFile);
 
   return (
     <div style={s.root}>
-      {/* Titolo fisso in alto */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.4; transform: scaleY(1); }
+          50% { opacity: 1; transform: scaleY(1.4); }
+        }
+      `}</style>
+
       <div style={s.header}>
         <span style={s.headerTitle}>Varallo Sesia</span>
         <span style={s.headerSub}>voci da una città</span>
       </div>
 
-      {/* Mappa SVG schematica */}
       <div style={s.mapWrap}>
         <svg viewBox="0 0 1000 600" style={s.svg} preserveAspectRatio="xMidYMid meet">
-          {/* Reticolo tenue */}
           {[0.2, 0.4, 0.6, 0.8].map((v) => (
             <g key={v}>
               <line x1={v * 1000} y1={0} x2={v * 1000} y2={600} stroke="#1a2a1a" strokeWidth={0.5} />
               <line x1={0} y1={v * 600} x2={1000} y2={v * 600} stroke="#1a2a1a" strokeWidth={0.5} />
             </g>
           ))}
-
-          {/* Fiume Sesia — linea poetica */}
           <path
             d="M 80 560 C 120 500, 180 480, 220 440 C 260 400, 300 380, 340 340 C 380 300, 400 260, 430 220 C 460 180, 500 150, 540 120"
-            stroke="#1e3a5f"
-            strokeWidth={6}
-            fill="none"
-            opacity={0.5}
+            stroke="#1e3a5f" strokeWidth={6} fill="none" opacity={0.5}
           />
-
-          {/* Label fiume */}
           <text x={130} y={510} fill="#1e3a5f" fontSize={11} opacity={0.6}
-            fontFamily="'Georgia', serif" transform="rotate(-32, 130, 510)">
+            fontFamily="Georgia, serif" transform="rotate(-32, 130, 510)">
             Sesia
           </text>
-
-          {/* Label zone */}
           {Object.entries(ZONE_COORDS).slice(0, 6).map(([nome, [px, py]]) => (
-            <text
-              key={nome}
-              x={px * 1000}
-              y={py * 600 - 18}
-              fill="#3a4a3a"
-              fontSize={10}
-              fontFamily="'Georgia', serif"
-              textAnchor="middle"
-              opacity={0.5}
-            >
+            <text key={nome} x={px * 1000} y={py * 600 - 18}
+              fill="#3a4a3a" fontSize={10} fontFamily="Georgia, serif"
+              textAnchor="middle" opacity={0.5}>
               {nome}
             </text>
           ))}
-
-          {/* Punti contributi */}
           {contributi.map((c, i) => {
             const cx = c.pos[0] * 1000;
             const cy = c.pos[1] * 600;
             const isActive = i === active;
             return (
               <g key={c.id}>
-                {/* alone pulsante */}
-                <circle
-                  cx={cx} cy={cy} r={isActive ? 28 : 14}
-                  fill="none"
-                  stroke={isActive ? "#c8a96e" : "#4a7a4a"}
+                <circle cx={cx} cy={cy} r={isActive ? 32 : 16}
+                  fill="none" stroke={isActive ? "#c8a96e" : "#4a7a4a"}
                   strokeWidth={isActive ? 2 : 1}
-                  opacity={isActive ? 0.8 : 0.3}
-                  style={{ transition: "all 1s ease" }}
-                />
-                {/* punto centrale */}
-                <circle
-                  cx={cx} cy={cy} r={isActive ? 7 : 4}
+                  opacity={isActive ? 0.9 : 0.35}
+                  style={{ transition: "all 1s ease" }} />
+                <circle cx={cx} cy={cy} r={isActive ? 8 : 4}
                   fill={isActive ? "#c8a96e" : "#5a9a5a"}
                   opacity={isActive ? 1 : 0.6}
-                  style={{ transition: "all 0.8s ease" }}
-                />
+                  style={{ transition: "all 0.8s ease" }} />
               </g>
             );
           })}
         </svg>
 
-        {/* Pannello contenuto — emerge dalla mappa */}
+        {/* Pannello contenuto */}
         {current && (
           <div style={{
             ...s.panel,
             opacity: phase === "content" ? 1 : 0,
-            transform: phase === "content" ? "translateY(0)" : "translateY(20px)",
+            transform: phase === "content" ? "translateY(0)" : "translateY(24px)",
+            flexDirection: hasMedia ? "row" : "column",
           }}>
-            {/* Colonna sinistra: info */}
-            <div style={s.panelLeft}>
+            <div style={{ ...s.panelLeft, maxWidth: hasMedia ? "50%" : "100%" }}>
               <p style={s.panelZona}>{current.zona}</p>
               {current.luogo && <p style={s.panelLuogo}>{current.luogo}</p>}
               {current.testo && <p style={s.panelTesto}>"{current.testo}"</p>}
               <p style={s.panelAutore}>— {current.autore}</p>
             </div>
 
-            {/* Colonna destra: media */}
-            {thumb && !isAudio && (
+            {hasMedia && (
               <div style={s.panelRight}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={thumb} alt="" style={s.thumb} />
-                {isVideo && <div style={s.videoLabel}>▶ video</div>}
-              </div>
-            )}
-            {isAudio && fileId && (
-              <div style={s.panelRight}>
-                <div style={s.audioWrap}>
-                  <div style={s.audioIcon}>♪</div>
-                  <p style={s.audioLabel}>registrazione audio</p>
-                </div>
+                <DriveMedia contributo={current} />
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* Contatore in basso */}
       <div style={s.footer}>
-        {contributi.length} voci raccolte
+        {contributi.length} {contributi.length === 1 ? "voce raccolta" : "voci raccolte"}
       </div>
     </div>
   );
@@ -267,9 +269,8 @@ const s: Record<string, React.CSSProperties> = {
     width: "100vw", height: "100vh",
     background: "#080f08",
     display: "flex", flexDirection: "column",
-    fontFamily: "'Georgia', 'Times New Roman', serif",
-    overflow: "hidden",
-    color: "#c8d8c0",
+    fontFamily: "Georgia, 'Times New Roman', serif",
+    overflow: "hidden", color: "#c8d8c0",
   },
   header: {
     padding: "18px 40px 8px",
@@ -283,37 +284,34 @@ const s: Record<string, React.CSSProperties> = {
   headerSub: {
     fontSize: 13, letterSpacing: 3, color: "#4a6a4a", fontStyle: "italic",
   },
-  mapWrap: {
-    flex: 1, position: "relative", overflow: "hidden",
-  },
-  svg: {
-    width: "100%", height: "100%",
-  },
+  mapWrap: { flex: 1, position: "relative", overflow: "hidden" },
+  svg: { width: "100%", height: "100%" },
   panel: {
     position: "absolute",
-    bottom: 32, left: "50%",
-    transform: "translateX(-50%)",
-    width: "70%",
-    background: "rgba(8,15,8,0.92)",
+    bottom: 28, left: "50%",
+    transform: "translateX(-50%) translateY(0)",
+    width: "72%",
+    background: "rgba(6,12,6,0.94)",
     border: "1px solid #2a3a2a",
-    borderRadius: 4,
-    padding: "28px 36px",
-    display: "flex", gap: 32,
-    transition: "opacity 1s ease, transform 1s ease",
-    backdropFilter: "blur(4px)",
+    borderRadius: 3,
+    padding: "26px 34px",
+    display: "flex", gap: 30,
+    transition: "opacity 1.2s ease, transform 1.2s ease",
+    backdropFilter: "blur(6px)",
+    alignItems: "center",
   },
   panelLeft: {
     flex: 1, display: "flex", flexDirection: "column", gap: 10,
   },
   panelZona: {
-    margin: 0, fontSize: 11, letterSpacing: 4,
+    margin: 0, fontSize: 10, letterSpacing: 4,
     textTransform: "uppercase", color: "#4a7a4a",
   },
   panelLuogo: {
     margin: 0, fontSize: 13, color: "#6a8a6a", fontStyle: "italic",
   },
   panelTesto: {
-    margin: 0, fontSize: 17, lineHeight: 1.6,
+    margin: 0, fontSize: 18, lineHeight: 1.65,
     color: "#d8e8d0", fontStyle: "italic",
     borderLeft: "2px solid #2a4a2a", paddingLeft: 16,
   },
@@ -321,26 +319,39 @@ const s: Record<string, React.CSSProperties> = {
     margin: 0, fontSize: 12, color: "#c8a96e", letterSpacing: 2,
   },
   panelRight: {
-    width: 220, flexShrink: 0,
+    width: 260, flexShrink: 0,
     display: "flex", alignItems: "center", justifyContent: "center",
   },
-  thumb: {
-    width: "100%", height: 150,
+  mediaImg: {
+    width: "100%", height: 160,
     objectFit: "cover", borderRadius: 2,
-    border: "1px solid #2a3a2a",
+    border: "1px solid #2a3a2a", display: "block",
   },
-  videoLabel: {
-    marginTop: 6, fontSize: 11, color: "#4a7a4a",
-    letterSpacing: 2, textAlign: "center",
-  },
-  audioWrap: {
-    display: "flex", flexDirection: "column",
-    alignItems: "center", gap: 8,
+  mediaFrame: {
+    width: "100%", height: 160,
     border: "1px solid #2a3a2a", borderRadius: 2,
-    padding: "24px 40px",
+    background: "#000",
   },
-  audioIcon: { fontSize: 36, color: "#4a7a4a" },
-  audioLabel: { margin: 0, fontSize: 11, color: "#4a6a4a", letterSpacing: 2 },
+  audioBox: {
+    width: "100%", display: "flex", flexDirection: "column",
+    alignItems: "center", gap: 10,
+    border: "1px solid #2a3a2a", borderRadius: 2, padding: "16px 20px",
+  },
+  audioWaveform: {
+    display: "flex", alignItems: "flex-end", gap: 4, height: 50,
+  },
+  audioBar: {
+    width: 6, background: "#4a7a4a", borderRadius: 2,
+    animation: "pulse 1.4s ease-in-out infinite",
+  },
+  audioFrame: {
+    width: "100%", height: 60,
+    border: "none", background: "transparent",
+  },
+  audioLabel: {
+    margin: 0, fontSize: 10, color: "#4a6a4a", letterSpacing: 3,
+    textTransform: "uppercase",
+  },
   footer: {
     padding: "10px 40px",
     fontSize: 11, letterSpacing: 3,
