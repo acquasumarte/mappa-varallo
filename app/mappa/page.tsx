@@ -37,7 +37,6 @@ function resolvePosition(zona: string, luogo: string): [number, number] {
 
 interface Contributo {
   id: string;
-  data: string;
   autore: string;
   zona: string;
   luogo: string;
@@ -57,11 +56,10 @@ async function fetchContributi(sheetId: string): Promise<Contributo[]> {
       const cols = line.match(/(".*?"|[^,]+)(?=,|$)/g)?.map((c) =>
         c.replace(/^"|"$/g, "").replace(/""/g, '"').trim()
       ) ?? [];
-      const [data, autore, zona, luogo, testo, tipoFile, link] = cols;
+      const [, autore, zona, luogo, testo, tipoFile, link] = cols;
       if (!autore) return null;
       return {
         id: String(i),
-        data: data ?? "",
         autore: autore ?? "",
         zona: zona ?? "",
         luogo: luogo ?? "",
@@ -79,20 +77,23 @@ function getFileId(link: string): string | null {
   return m ? m[1] : null;
 }
 
-// Componente media: usa sempre iframe di Drive che funziona per foto, video e audio
 function DriveMedia({ contributo }: { contributo: Contributo }) {
   const fileId = getFileId(contributo.link);
   const tipo = contributo.tipoFile;
-
   if (!fileId) return null;
 
   if (tipo.startsWith("image/")) {
-    // Per le immagini usiamo il tag img direttamente con l'URL di download pubblico
+    // lh3.googleusercontent.com è l'URL diretto di Google per immagini pubbliche su Drive
     return (
       <img
-        src={`https://drive.google.com/uc?export=view&id=${fileId}`}
+        src={`https://lh3.googleusercontent.com/d/${fileId}`}
         alt=""
         style={s.mediaImg}
+        onError={(e) => {
+          // fallback al secondo URL se il primo non funziona
+          (e.target as HTMLImageElement).src =
+            `https://drive.google.com/thumbnail?id=${fileId}&sz=w800`;
+        }}
       />
     );
   }
@@ -100,6 +101,7 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
   if (tipo.startsWith("video/")) {
     return (
       <iframe
+        key={fileId}
         src={`https://drive.google.com/file/d/${fileId}/preview?autoplay=1`}
         style={s.mediaFrame}
         allow="autoplay; fullscreen"
@@ -124,6 +126,7 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
           ))}
         </div>
         <iframe
+          key={fileId}
           src={`https://drive.google.com/file/d/${fileId}/preview`}
           style={s.audioFrame}
           allow="autoplay"
@@ -145,14 +148,11 @@ export default function MappaPage() {
 
   useEffect(() => {
     if (!sheetId) return;
-    fetchContributi(sheetId).then((data) => {
-      setContributi(data.filter((c) => c.autore));
-    });
+    fetchContributi(sheetId).then((data) => setContributi(data.filter((c) => c.autore)));
   }, [sheetId]);
 
   useEffect(() => {
     if (contributi.length === 0) return;
-
     function next() {
       setPhase("map");
       timerRef.current = setTimeout(() => {
@@ -164,11 +164,10 @@ export default function MappaPage() {
           timerRef.current = setTimeout(() => {
             setPhase("fade");
             timerRef.current = setTimeout(next, 1500);
-          }, 12000); // 12 secondi per contenuto — abbastanza per guardare foto/ascoltare audio
+          }, 30000); // ← 30 secondi visibile
         }, 800);
       }, 3000);
     }
-
     next();
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [contributi]);
@@ -181,7 +180,7 @@ export default function MappaPage() {
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 0.4; transform: scaleY(1); }
-          50% { opacity: 1; transform: scaleY(1.4); }
+          50% { opacity: 1; transform: scaleY(1.5); }
         }
       `}</style>
 
@@ -194,8 +193,8 @@ export default function MappaPage() {
         <svg viewBox="0 0 1000 600" style={s.svg} preserveAspectRatio="xMidYMid meet">
           {[0.2, 0.4, 0.6, 0.8].map((v) => (
             <g key={v}>
-              <line x1={v * 1000} y1={0} x2={v * 1000} y2={600} stroke="#1a2a1a" strokeWidth={0.5} />
-              <line x1={0} y1={v * 600} x2={1000} y2={v * 600} stroke="#1a2a1a" strokeWidth={0.5} />
+              <line x1={v*1000} y1={0} x2={v*1000} y2={600} stroke="#1a2a1a" strokeWidth={0.5}/>
+              <line x1={0} y1={v*600} x2={1000} y2={v*600} stroke="#1a2a1a" strokeWidth={0.5}/>
             </g>
           ))}
           <path
@@ -203,15 +202,11 @@ export default function MappaPage() {
             stroke="#1e3a5f" strokeWidth={6} fill="none" opacity={0.5}
           />
           <text x={130} y={510} fill="#1e3a5f" fontSize={11} opacity={0.6}
-            fontFamily="Georgia, serif" transform="rotate(-32, 130, 510)">
-            Sesia
-          </text>
+            fontFamily="Georgia, serif" transform="rotate(-32, 130, 510)">Sesia</text>
           {Object.entries(ZONE_COORDS).slice(0, 6).map(([nome, [px, py]]) => (
-            <text key={nome} x={px * 1000} y={py * 600 - 18}
+            <text key={nome} x={px*1000} y={py*600-18}
               fill="#3a4a3a" fontSize={10} fontFamily="Georgia, serif"
-              textAnchor="middle" opacity={0.5}>
-              {nome}
-            </text>
+              textAnchor="middle" opacity={0.5}>{nome}</text>
           ))}
           {contributi.map((c, i) => {
             const cx = c.pos[0] * 1000;
@@ -221,24 +216,23 @@ export default function MappaPage() {
               <g key={c.id}>
                 <circle cx={cx} cy={cy} r={isActive ? 32 : 16}
                   fill="none" stroke={isActive ? "#c8a96e" : "#4a7a4a"}
-                  strokeWidth={isActive ? 2 : 1}
-                  opacity={isActive ? 0.9 : 0.35}
+                  strokeWidth={isActive ? 2 : 1} opacity={isActive ? 0.9 : 0.35}
                   style={{ transition: "all 1s ease" }} />
                 <circle cx={cx} cy={cy} r={isActive ? 8 : 4}
-                  fill={isActive ? "#c8a96e" : "#5a9a5a"}
-                  opacity={isActive ? 1 : 0.6}
+                  fill={isActive ? "#c8a96e" : "#5a9a5a"} opacity={isActive ? 1 : 0.6}
                   style={{ transition: "all 0.8s ease" }} />
               </g>
             );
           })}
         </svg>
 
-        {/* Pannello contenuto */}
         {current && (
           <div style={{
             ...s.panel,
             opacity: phase === "content" ? 1 : 0,
-            transform: phase === "content" ? "translateY(0)" : "translateY(24px)",
+            transform: phase === "content"
+              ? "translateX(-50%) translateY(0)"
+              : "translateX(-50%) translateY(24px)",
             flexDirection: hasMedia ? "row" : "column",
           }}>
             <div style={{ ...s.panelLeft, maxWidth: hasMedia ? "50%" : "100%" }}>
@@ -247,7 +241,6 @@ export default function MappaPage() {
               {current.testo && <p style={s.panelTesto}>"{current.testo}"</p>}
               <p style={s.panelAutore}>— {current.autore}</p>
             </div>
-
             {hasMedia && (
               <div style={s.panelRight}>
                 <DriveMedia contributo={current} />
@@ -266,96 +259,44 @@ export default function MappaPage() {
 
 const s: Record<string, React.CSSProperties> = {
   root: {
-    width: "100vw", height: "100vh",
-    background: "#080f08",
+    width: "100vw", height: "100vh", background: "#080f08",
     display: "flex", flexDirection: "column",
     fontFamily: "Georgia, 'Times New Roman', serif",
     overflow: "hidden", color: "#c8d8c0",
   },
   header: {
-    padding: "18px 40px 8px",
-    display: "flex", alignItems: "baseline", gap: 16,
+    padding: "18px 40px 8px", display: "flex", alignItems: "baseline", gap: 16,
     borderBottom: "1px solid #1a2a1a",
   },
-  headerTitle: {
-    fontSize: 22, letterSpacing: 6, textTransform: "uppercase",
-    color: "#c8a96e", fontWeight: 400,
-  },
-  headerSub: {
-    fontSize: 13, letterSpacing: 3, color: "#4a6a4a", fontStyle: "italic",
-  },
+  headerTitle: { fontSize: 22, letterSpacing: 6, textTransform: "uppercase", color: "#c8a96e", fontWeight: 400 },
+  headerSub: { fontSize: 13, letterSpacing: 3, color: "#4a6a4a", fontStyle: "italic" },
   mapWrap: { flex: 1, position: "relative", overflow: "hidden" },
   svg: { width: "100%", height: "100%" },
   panel: {
-    position: "absolute",
-    bottom: 28, left: "50%",
-    transform: "translateX(-50%) translateY(0)",
+    position: "absolute", bottom: 28, left: "50%",
+    transform: "translateX(-50%)",
     width: "72%",
     background: "rgba(6,12,6,0.94)",
-    border: "1px solid #2a3a2a",
-    borderRadius: 3,
-    padding: "26px 34px",
-    display: "flex", gap: 30,
+    border: "1px solid #2a3a2a", borderRadius: 3,
+    padding: "26px 34px", display: "flex", gap: 30,
     transition: "opacity 1.2s ease, transform 1.2s ease",
-    backdropFilter: "blur(6px)",
-    alignItems: "center",
+    backdropFilter: "blur(6px)", alignItems: "center",
   },
-  panelLeft: {
-    flex: 1, display: "flex", flexDirection: "column", gap: 10,
-  },
-  panelZona: {
-    margin: 0, fontSize: 10, letterSpacing: 4,
-    textTransform: "uppercase", color: "#4a7a4a",
-  },
-  panelLuogo: {
-    margin: 0, fontSize: 13, color: "#6a8a6a", fontStyle: "italic",
-  },
+  panelLeft: { flex: 1, display: "flex", flexDirection: "column", gap: 10 },
+  panelZona: { margin: 0, fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: "#4a7a4a" },
+  panelLuogo: { margin: 0, fontSize: 13, color: "#6a8a6a", fontStyle: "italic" },
   panelTesto: {
-    margin: 0, fontSize: 18, lineHeight: 1.65,
-    color: "#d8e8d0", fontStyle: "italic",
+    margin: 0, fontSize: 18, lineHeight: 1.65, color: "#d8e8d0", fontStyle: "italic",
     borderLeft: "2px solid #2a4a2a", paddingLeft: 16,
   },
-  panelAutore: {
-    margin: 0, fontSize: 12, color: "#c8a96e", letterSpacing: 2,
-  },
-  panelRight: {
-    width: 260, flexShrink: 0,
-    display: "flex", alignItems: "center", justifyContent: "center",
-  },
-  mediaImg: {
-    width: "100%", height: 160,
-    objectFit: "cover", borderRadius: 2,
-    border: "1px solid #2a3a2a", display: "block",
-  },
-  mediaFrame: {
-    width: "100%", height: 160,
-    border: "1px solid #2a3a2a", borderRadius: 2,
-    background: "#000",
-  },
-  audioBox: {
-    width: "100%", display: "flex", flexDirection: "column",
-    alignItems: "center", gap: 10,
-    border: "1px solid #2a3a2a", borderRadius: 2, padding: "16px 20px",
-  },
-  audioWaveform: {
-    display: "flex", alignItems: "flex-end", gap: 4, height: 50,
-  },
-  audioBar: {
-    width: 6, background: "#4a7a4a", borderRadius: 2,
-    animation: "pulse 1.4s ease-in-out infinite",
-  },
-  audioFrame: {
-    width: "100%", height: 60,
-    border: "none", background: "transparent",
-  },
-  audioLabel: {
-    margin: 0, fontSize: 10, color: "#4a6a4a", letterSpacing: 3,
-    textTransform: "uppercase",
-  },
-  footer: {
-    padding: "10px 40px",
-    fontSize: 11, letterSpacing: 3,
-    color: "#2a4a2a", textAlign: "right",
-    borderTop: "1px solid #1a2a1a",
-  },
+  panelAutore: { margin: 0, fontSize: 12, color: "#c8a96e", letterSpacing: 2 },
+  panelRight: { width: 280, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" },
+  mediaImg: { width: "100%", height: 180, objectFit: "cover", borderRadius: 2, border: "1px solid #2a3a2a", display: "block" },
+  mediaFrame: { width: "100%", height: 180, border: "1px solid #2a3a2a", borderRadius: 2, background: "#000" },
+  audioBox: { width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, border: "1px solid #2a3a2a", borderRadius: 2, padding: "14px 20px" },
+  audioWaveform: { display: "flex", alignItems: "flex-end", gap: 4, height: 50 },
+  audioBar: { width: 6, background: "#4a7a4a", borderRadius: 2, animation: "pulse 1.4s ease-in-out infinite" },
+  audioFrame: { width: "100%", height: 60, border: "none", background: "transparent" },
+  audioLabel: { margin: 0, fontSize: 10, color: "#4a6a4a", letterSpacing: 3, textTransform: "uppercase" },
+  footer: { padding: "10px 40px", fontSize: 11, letterSpacing: 3, color: "#2a4a2a", textAlign: "right", borderTop: "1px solid #1a2a1a" },
 };
