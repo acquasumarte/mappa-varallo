@@ -13,15 +13,15 @@ const ZONE_COORDS: Record<string, [number, number]> = {
 };
 
 const ADDR_HINTS: Array<{ keywords: string[]; pos: [number, number] }> = [
-  { keywords: ["vittorio", "emanuele"],  pos: [0.50, 0.47] },
-  { keywords: ["sacro", "monte"],        pos: [0.54, 0.28] },
-  { keywords: ["stazione"],              pos: [0.42, 0.60] },
-  { keywords: ["corso", "roma"],         pos: [0.48, 0.50] },
-  { keywords: ["moro"],                  pos: [0.52, 0.46] },
-  { keywords: ["umberto"],               pos: [0.50, 0.47] },
-  { keywords: ["garibaldi"],             pos: [0.51, 0.49] },
-  { keywords: ["piazza"],                pos: [0.50, 0.47] },
-  { keywords: ["chiesa"],                pos: [0.49, 0.45] },
+  { keywords: ["vittorio", "emanuele"], pos: [0.50, 0.47] },
+  { keywords: ["sacro", "monte"],       pos: [0.54, 0.28] },
+  { keywords: ["stazione"],             pos: [0.42, 0.60] },
+  { keywords: ["corso", "roma"],        pos: [0.48, 0.50] },
+  { keywords: ["moro"],                 pos: [0.52, 0.46] },
+  { keywords: ["umberto"],              pos: [0.50, 0.47] },
+  { keywords: ["garibaldi"],            pos: [0.51, 0.49] },
+  { keywords: ["piazza"],               pos: [0.50, 0.47] },
+  { keywords: ["chiesa"],               pos: [0.49, 0.45] },
 ];
 
 function jitter(seed: string, range: number): number {
@@ -72,13 +72,15 @@ function getFileId(link: string): string | null {
   return link?.match(/\/d\/([a-zA-Z0-9_-]+)/)?.[1] ?? null;
 }
 
-// Tutti i media usano iframe Drive preview — il metodo più affidabile per file pubblici
+// Usa tag nativi <video> e <audio> invece di iframe:
+// ereditano il gesto dell'utente dalla pagina e fanno autoplay correttamente
 function DriveMedia({ contributo }: { contributo: Contributo }) {
   const fileId = getFileId(contributo.link);
   if (!fileId) return null;
   const tipo = contributo.tipoFile;
+  // URL diretto Drive per file pubblici
+  const src = `https://drive.google.com/uc?id=${fileId}&export=download`;
 
-  // Per immagini: thumbnail ad alta risoluzione
   if (tipo.startsWith("image/")) {
     return (
       <img
@@ -89,14 +91,16 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
     );
   }
 
-  // Video e audio: iframe preview di Drive con autoplay
-  // L'autoplay funziona perché l'utente ha già interagito con la pagina (click iniziale)
-  const autoplayUrl = `https://drive.google.com/file/d/${fileId}/preview?autoplay=1&mute=0`;
-
   if (tipo.startsWith("video/")) {
     return (
-      <iframe key={fileId} src={autoplayUrl} style={s.mediaFrame}
-        allow="autoplay; fullscreen" allowFullScreen />
+      <video
+        key={fileId}
+        autoPlay
+        playsInline
+        controls
+        style={s.mediaVideo}
+        src={src}
+      />
     );
   }
 
@@ -112,7 +116,13 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
             }} />
           ))}
         </div>
-        <iframe key={fileId} src={autoplayUrl} style={s.audioFrame} allow="autoplay" />
+        <audio
+          key={fileId}
+          autoPlay
+          controls
+          style={s.audioPlayer}
+          src={src}
+        />
         <p style={s.audioLabel}>registrazione audio</p>
       </div>
     );
@@ -123,7 +133,7 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
 export default function MappaPage() {
   const [started, setStarted] = useState(false);
   const [contributi, setContributi] = useState<Contributo[]>([]);
-  const [active, setActive] = useState<number | null>(null);
+  const [activeIdx, setActiveIdx] = useState(0);
   const [phase, setPhase] = useState<"map" | "reveal" | "content" | "fade">("map");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sheetId = process.env.NEXT_PUBLIC_SHEET_ID ?? "";
@@ -133,48 +143,49 @@ export default function MappaPage() {
     fetchContributi(sheetId).then((data) => setContributi(data.filter((c) => c.autore)));
   }, [sheetId]);
 
-  const startCycle = useCallback(() => {
-    if (contributi.length === 0) return;
-    function next() {
-      setPhase("map");
+  const runCycle = useCallback((idx: number, list: Contributo[]) => {
+    if (list.length === 0) return;
+    setActiveIdx(idx);
+    setPhase("map");
+    timerRef.current = setTimeout(() => {
+      setPhase("reveal");
       timerRef.current = setTimeout(() => {
-        const idx = Math.floor(Math.random() * contributi.length);
-        setActive(idx);
-        setPhase("reveal");
+        setPhase("content");
         timerRef.current = setTimeout(() => {
-          setPhase("content");
+          setPhase("fade");
           timerRef.current = setTimeout(() => {
-            setPhase("fade");
-            timerRef.current = setTimeout(next, 1500);
-          }, 30000);
-        }, 800);
-      }, 3000);
-    }
-    next();
-  }, [contributi]);
+            // Avanza in sequenza, torna al primo dopo l'ultimo
+            const next = (idx + 1) % list.length;
+            runCycle(next, list);
+          }, 1500);
+        }, 30000);
+      }, 800);
+    }, 3000);
+  }, []);
 
   function handleStart() {
     setStarted(true);
-    // Piccolo audio silenzioso per sbloccare l'autoplay nel browser
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const buf = ctx.createBuffer(1, 1, 22050);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    src.start(0);
-    ctx.resume();
+    // Sblocca AudioContext per autoplay audio
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+      ctx.resume();
+    } catch (_) {}
   }
 
   useEffect(() => {
     if (!started || contributi.length === 0) return;
-    startCycle();
+    runCycle(0, contributi);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [started, contributi, startCycle]);
+  }, [started, contributi, runCycle]);
 
-  const current = active !== null ? contributi[active] : null;
+  const current = contributi[activeIdx] ?? null;
   const hasMedia = !!(current?.link && current?.tipoFile);
 
-  // Schermata iniziale — l'operatore clicca una volta per sbloccare audio/video
   if (!started) {
     return (
       <div style={s.startScreen} onClick={handleStart}>
@@ -182,7 +193,9 @@ export default function MappaPage() {
           <p style={s.startTitle}>VARALLO SESIA</p>
           <p style={s.startSub}>voci da una città</p>
           <p style={s.startCta}>tocca per avviare la proiezione</p>
-          <p style={s.startCount}>{contributi.length > 0 ? `${contributi.length} contributi caricati` : "caricamento..."}</p>
+          <p style={s.startCount}>
+            {contributi.length > 0 ? `${contributi.length} contributi caricati` : "caricamento…"}
+          </p>
         </div>
       </div>
     );
@@ -195,6 +208,8 @@ export default function MappaPage() {
           0%, 100% { opacity: 0.4; transform: scaleY(1); }
           50% { opacity: 1; transform: scaleY(1.5); }
         }
+        video, audio { outline: none; }
+        audio { width: 100%; filter: invert(0.85) hue-rotate(100deg) brightness(0.9); }
       `}</style>
 
       <div style={s.header}>
@@ -204,38 +219,54 @@ export default function MappaPage() {
 
       <div style={s.mapWrap}>
         <svg viewBox="0 0 1000 600" style={s.svg} preserveAspectRatio="xMidYMid meet">
+          {/* Griglia */}
           {[0.2, 0.4, 0.6, 0.8].map((v) => (
             <g key={v}>
               <line x1={v*1000} y1={0} x2={v*1000} y2={600} stroke="#1a2a1a" strokeWidth={0.5}/>
               <line x1={0} y1={v*600} x2={1000} y2={v*600} stroke="#1a2a1a" strokeWidth={0.5}/>
             </g>
           ))}
+          {/* Fiume Sesia */}
           <path d="M 80 560 C 120 500, 180 480, 220 440 C 260 400, 300 380, 340 340 C 380 300, 400 260, 430 220 C 460 180, 500 150, 540 120"
-            stroke="#1e3a5f" strokeWidth={6} fill="none" opacity={0.5} />
-          <text x={130} y={510} fill="#1e3a5f" fontSize={11} opacity={0.6}
+            stroke="#1e3a5f" strokeWidth={6} fill="none" opacity={0.6} />
+          <text x={130} y={510} fill="#2a5a8f" fontSize={12} opacity={0.8}
             fontFamily="Georgia, serif" transform="rotate(-32, 130, 510)">Sesia</text>
+
+          {/* Etichette zone — più grandi e luminose */}
           {Object.entries(ZONE_COORDS).map(([nome, [px, py]]) => (
-            <text key={nome} x={px*1000} y={py*600 - 18} fill="#3a4a3a" fontSize={10}
-              fontFamily="Georgia, serif" textAnchor="middle" opacity={0.5}>{nome}</text>
+            <g key={nome}>
+              {/* Alone scuro sotto il testo per leggibilità */}
+              <text x={px*1000} y={py*600 - 16} fill="#000" fontSize={13}
+                fontFamily="Georgia, serif" textAnchor="middle"
+                strokeWidth={3} stroke="#080f08" paintOrder="stroke"
+                opacity={0.9}>{nome}</text>
+              {/* Testo vero */}
+              <text x={px*1000} y={py*600 - 16} fill="#7aaa7a" fontSize={13}
+                fontFamily="Georgia, serif" textAnchor="middle"
+                opacity={0.9} fontStyle="italic">{nome}</text>
+            </g>
           ))}
+
+          {/* Punti contributi */}
           {contributi.map((c, i) => {
             const cx = c.pos[0] * 1000;
             const cy = c.pos[1] * 600;
-            const isActive = i === active;
+            const isActive = i === activeIdx && phase === "content";
             return (
               <g key={c.id}>
                 <circle cx={cx} cy={cy} r={isActive ? 32 : 16} fill="none"
                   stroke={isActive ? "#c8a96e" : "#4a7a4a"}
-                  strokeWidth={isActive ? 2 : 1} opacity={isActive ? 0.9 : 0.35}
+                  strokeWidth={isActive ? 2 : 1} opacity={isActive ? 0.9 : 0.4}
                   style={{ transition: "all 1s ease" }} />
                 <circle cx={cx} cy={cy} r={isActive ? 8 : 4}
-                  fill={isActive ? "#c8a96e" : "#5a9a5a"} opacity={isActive ? 1 : 0.6}
+                  fill={isActive ? "#c8a96e" : "#5a9a5a"} opacity={isActive ? 1 : 0.65}
                   style={{ transition: "all 0.8s ease" }} />
               </g>
             );
           })}
         </svg>
 
+        {/* Pannello contenuto */}
         {current && (
           <div style={{
             ...s.panel,
@@ -250,6 +281,8 @@ export default function MappaPage() {
               {current.luogo && <p style={s.panelLuogo}>{current.luogo}</p>}
               {current.testo && <p style={s.panelTesto}>"{current.testo}"</p>}
               <p style={s.panelAutore}>— {current.autore}</p>
+              {/* Indicatore di posizione nella sequenza */}
+              <p style={s.panelCounter}>{activeIdx + 1} / {contributi.length}</p>
             </div>
             {hasMedia && (
               <div style={s.panelRight}>
@@ -272,13 +305,12 @@ const s: Record<string, React.CSSProperties> = {
     flexDirection: "column", fontFamily: "Georgia, 'Times New Roman', serif",
     overflow: "hidden", color: "#c8d8c0" },
   startScreen: { width: "100vw", height: "100vh", background: "#080f08", display: "flex",
-    alignItems: "center", justifyContent: "center", cursor: "pointer",
-    fontFamily: "Georgia, serif" },
+    alignItems: "center", justifyContent: "center", cursor: "pointer", fontFamily: "Georgia, serif" },
   startBox: { textAlign: "center", display: "flex", flexDirection: "column", gap: 16 },
   startTitle: { margin: 0, fontSize: 36, letterSpacing: 10, textTransform: "uppercase",
     color: "#c8a96e", fontWeight: 400 },
   startSub: { margin: 0, fontSize: 16, letterSpacing: 4, color: "#4a6a4a", fontStyle: "italic" },
-  startCta: { margin: "24px 0 0", fontSize: 13, letterSpacing: 3, color: "#3a5a3a",
+  startCta: { margin: "24px 0 0", fontSize: 13, letterSpacing: 3, color: "#5a8a5a",
     textTransform: "uppercase" },
   startCount: { margin: 0, fontSize: 11, color: "#2a3a2a", letterSpacing: 2 },
   header: { padding: "18px 40px 8px", display: "flex", alignItems: "baseline", gap: 16,
@@ -295,27 +327,24 @@ const s: Record<string, React.CSSProperties> = {
     transition: "opacity 1.2s ease, transform 1.2s ease",
     backdropFilter: "blur(6px)", alignItems: "center" },
   panelLeft: { flex: 1, display: "flex", flexDirection: "column", gap: 10 },
-  panelZona: { margin: 0, fontSize: 10, letterSpacing: 4, textTransform: "uppercase",
-    color: "#4a7a4a" },
+  panelZona: { margin: 0, fontSize: 10, letterSpacing: 4, textTransform: "uppercase", color: "#4a7a4a" },
   panelLuogo: { margin: 0, fontSize: 13, color: "#6a8a6a", fontStyle: "italic" },
   panelTesto: { margin: 0, fontSize: 18, lineHeight: 1.65, color: "#d8e8d0",
     fontStyle: "italic", borderLeft: "2px solid #2a4a2a", paddingLeft: 16 },
   panelAutore: { margin: 0, fontSize: 12, color: "#c8a96e", letterSpacing: 2 },
-  panelRight: { width: 280, flexShrink: 0, display: "flex", alignItems: "center",
-    justifyContent: "center" },
+  panelCounter: { margin: 0, fontSize: 10, color: "#2a4a2a", letterSpacing: 2 },
+  panelRight: { width: 280, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" },
   mediaImg: { width: "100%", height: 180, objectFit: "cover", borderRadius: 2,
     border: "1px solid #2a3a2a", display: "block" },
-  mediaFrame: { width: "100%", height: 180, border: "1px solid #2a3a2a",
-    borderRadius: 2, background: "#000" },
-  audioBox: { width: "100%", display: "flex", flexDirection: "column",
-    alignItems: "center", gap: 8, border: "1px solid #2a3a2a",
-    borderRadius: 2, padding: "14px 20px" },
+  mediaVideo: { width: "100%", height: 180, borderRadius: 2, border: "1px solid #2a3a2a",
+    background: "#000", display: "block" },
+  audioBox: { width: "100%", display: "flex", flexDirection: "column", alignItems: "center",
+    gap: 10, border: "1px solid #2a3a2a", borderRadius: 2, padding: "14px 20px" },
   audioWaveform: { display: "flex", alignItems: "flex-end", gap: 4, height: 50 },
   audioBar: { width: 6, background: "#4a7a4a", borderRadius: 2,
     animation: "pulse 1.4s ease-in-out infinite" },
-  audioFrame: { width: "100%", height: 80, border: "none", background: "transparent" },
-  audioLabel: { margin: 0, fontSize: 10, color: "#4a6a4a", letterSpacing: 3,
-    textTransform: "uppercase" },
+  audioPlayer: { borderRadius: 2 },
+  audioLabel: { margin: 0, fontSize: 10, color: "#4a6a4a", letterSpacing: 3, textTransform: "uppercase" },
   footer: { padding: "10px 40px", fontSize: 11, letterSpacing: 3, color: "#2a4a2a",
     textAlign: "right", borderTop: "1px solid #1a2a1a" },
 };
