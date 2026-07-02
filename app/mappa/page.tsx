@@ -9,7 +9,7 @@ const ZONE_COORDS: Record<string, [number, number]> = {
   "Roccapietra":                    [0.30, 0.65],
   "Crosa":                          [0.60, 0.55],
   "Vocca / Borgosesia (limitrofo)": [0.20, 0.80],
-  "Altro":                          [0.50, 0.50],
+  "Altro":                          [0.72, 0.42],
 };
 
 const ADDR_HINTS: Array<{ keywords: string[]; pos: [number, number] }> = [
@@ -78,8 +78,8 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
   const fileId = getFileId(contributo.link);
   if (!fileId) return null;
   const tipo = contributo.tipoFile;
-  // URL diretto Drive per file pubblici
-  const src = `https://drive.google.com/uc?id=${fileId}&export=download`;
+  // Proxy server-side: bypassa redirect e autenticazione Drive
+  const proxySrc = `/api/media/${fileId}`;
 
   if (tipo.startsWith("image/")) {
     return (
@@ -99,7 +99,7 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
         playsInline
         controls
         style={s.mediaVideo}
-        src={src}
+        src={proxySrc}
       />
     );
   }
@@ -121,7 +121,7 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
           autoPlay
           controls
           style={s.audioPlayer}
-          src={src}
+          src={proxySrc}
         />
         <p style={s.audioLabel}>registrazione audio</p>
       </div>
