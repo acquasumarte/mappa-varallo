@@ -3,36 +3,59 @@
 import { useEffect, useState, useRef } from "react";
 
 const ZONE_COORDS: Record<string, [number, number]> = {
-  "Centro storico":       [0.50, 0.48],
-  "Sacro Monte":          [0.54, 0.28],
-  "Quartiere Stazione":   [0.42, 0.58],
-  "Roccapietra":          [0.30, 0.65],
-  "Crosa":                [0.60, 0.55],
+  "Centro storico":                 [0.50, 0.48],
+  "Sacro Monte":                    [0.54, 0.28],
+  "Quartiere Stazione":             [0.42, 0.58],
+  "Roccapietra":                    [0.30, 0.65],
+  "Crosa":                          [0.60, 0.55],
   "Vocca / Borgosesia (limitrofo)": [0.20, 0.80],
-  "Altro":                [0.50, 0.50],
+  "Altro":                          [0.50, 0.50],
 };
 
 const ADDR_HINTS: Array<{ keywords: string[]; pos: [number, number] }> = [
-  { keywords: ["vittorio", "piazza", "emanuele"], pos: [0.50, 0.47] },
-  { keywords: ["sacro", "monte"],                 pos: [0.54, 0.28] },
-  { keywords: ["stazione"],                        pos: [0.42, 0.60] },
-  { keywords: ["corso", "roma"],                   pos: [0.48, 0.50] },
-  { keywords: ["moro"],                            pos: [0.52, 0.46] },
-  { keywords: ["chiesa"],                          pos: [0.49, 0.45] },
+  { keywords: ["vittorio", "emanuele"],   pos: [0.50, 0.47] },
+  { keywords: ["sacro", "monte"],         pos: [0.54, 0.28] },
+  { keywords: ["stazione"],               pos: [0.42, 0.60] },
+  { keywords: ["corso", "roma"],          pos: [0.48, 0.50] },
+  { keywords: ["moro"],                   pos: [0.52, 0.46] },
+  { keywords: ["chiesa"],                 pos: [0.49, 0.45] },
+  { keywords: ["umberto"],               pos: [0.50, 0.47] },
+  { keywords: ["garibaldi"],              pos: [0.51, 0.49] },
+  { keywords: ["piazza"],                 pos: [0.50, 0.47] },
 ];
 
-function resolvePosition(zona: string, luogo: string): [number, number] {
+// Dispersione deterministica: stesso contributo → sempre stesso punto
+function deterministicJitter(seed: string, range: number): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (Math.imul(31, h) + seed.charCodeAt(i)) | 0;
+  return ((h & 0xffff) / 0xffff - 0.5) * range;
+}
+
+function resolvePosition(zona: string, luogo: string, autore: string): [number, number] {
+  // Prima cerca per indirizzo specifico
   if (luogo) {
     const lower = luogo.toLowerCase();
     for (const hint of ADDR_HINTS) {
-      if (hint.keywords.some((k) => lower.includes(k))) return hint.pos;
+      if (hint.keywords.some((k) => lower.includes(k))) {
+        // piccola dispersione anche sui match per indirizzo
+        const seed = autore + zona;
+        return [
+          hint.pos[0] + deterministicJitter(seed + "x", 0.025),
+          hint.pos[1] + deterministicJitter(seed + "y", 0.025),
+        ];
+      }
     }
   }
-  const base = ZONE_COORDS[zona] ?? [0.50, 0.50];
-  const seed = zona.charCodeAt(0) + (luogo?.charCodeAt(0) ?? 0);
-  const dx = ((seed * 17) % 40 - 20) / 1000;
-  const dy = ((seed * 31) % 40 - 20) / 1000;
-  return [base[0] + dx, base[1] + dy];
+  // Poi cerca per zona (confronto case-insensitive e trim)
+  const zonaKey = Object.keys(ZONE_COORDS).find(
+    (k) => k.toLowerCase().trim() === zona.toLowerCase().trim()
+  );
+  const base = zonaKey ? ZONE_COORDS[zonaKey] : [0.50, 0.50] as [number, number];
+  const seed = autore + zona + luogo;
+  return [
+    base[0] + deterministicJitter(seed + "x", 0.04),
+    base[1] + deterministicJitter(seed + "y", 0.04),
+  ];
 }
 
 interface Contributo {
@@ -66,7 +89,7 @@ async function fetchContributi(sheetId: string): Promise<Contributo[]> {
         testo: testo ?? "",
         tipoFile: tipoFile ?? "",
         link: link ?? "",
-        pos: resolvePosition(zona ?? "", luogo ?? ""),
+        pos: resolvePosition(zona ?? "", luogo ?? "", autore ?? ""),
       } as Contributo;
     })
     .filter(Boolean) as Contributo[];
@@ -80,20 +103,24 @@ function getFileId(link: string): string | null {
 function DriveMedia({ contributo }: { contributo: Contributo }) {
   const fileId = getFileId(contributo.link);
   const tipo = contributo.tipoFile;
+  const [imgSrc, setImgSrc] = useState(0); // 0=lh3, 1=thumbnail, 2=fallito
   if (!fileId) return null;
 
   if (tipo.startsWith("image/")) {
-    // lh3.googleusercontent.com è l'URL diretto di Google per immagini pubbliche su Drive
+    const srcs = [
+      `https://lh3.googleusercontent.com/d/${fileId}`,
+      `https://drive.google.com/thumbnail?id=${fileId}&sz=w800`,
+    ];
+    if (imgSrc >= srcs.length) return (
+      <div style={s.mediaFallback}>immagine non disponibile</div>
+    );
     return (
       <img
-        src={`https://lh3.googleusercontent.com/d/${fileId}`}
+        key={srcs[imgSrc]}
+        src={srcs[imgSrc]}
         alt=""
         style={s.mediaImg}
-        onError={(e) => {
-          // fallback al secondo URL se il primo non funziona
-          (e.target as HTMLImageElement).src =
-            `https://drive.google.com/thumbnail?id=${fileId}&sz=w800`;
-        }}
+        onError={() => setImgSrc((n) => n + 1)}
       />
     );
   }
@@ -111,25 +138,26 @@ function DriveMedia({ contributo }: { contributo: Contributo }) {
   }
 
   if (tipo.startsWith("audio/")) {
+    // Tag audio nativo: più affidabile degli iframe per l'autoplay
+    // URL diretto Drive per file pubblici
     return (
       <div style={s.audioBox}>
         <div style={s.audioWaveform}>
           {Array.from({ length: 18 }).map((_, i) => (
-            <div
-              key={i}
-              style={{
-                ...s.audioBar,
-                height: `${20 + Math.sin(i * 1.3) * 16 + Math.cos(i * 0.7) * 10}px`,
-                animationDelay: `${i * 0.1}s`,
-              }}
-            />
+            <div key={i} style={{
+              ...s.audioBar,
+              height: `${20 + Math.sin(i * 1.3) * 16 + Math.cos(i * 0.7) * 10}px`,
+              animationDelay: `${i * 0.1}s`,
+            }} />
           ))}
         </div>
-        <iframe
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+        <audio
           key={fileId}
-          src={`https://drive.google.com/file/d/${fileId}/preview`}
-          style={s.audioFrame}
-          allow="autoplay"
+          autoPlay
+          controls
+          style={s.audioPlayer}
+          src={`https://drive.google.com/uc?export=download&id=${fileId}`}
         />
         <p style={s.audioLabel}>registrazione audio</p>
       </div>
@@ -164,7 +192,7 @@ export default function MappaPage() {
           timerRef.current = setTimeout(() => {
             setPhase("fade");
             timerRef.current = setTimeout(next, 1500);
-          }, 30000); // ← 30 secondi visibile
+          }, 30000);
         }, 800);
       }, 3000);
     }
@@ -182,6 +210,7 @@ export default function MappaPage() {
           0%, 100% { opacity: 0.4; transform: scaleY(1); }
           50% { opacity: 1; transform: scaleY(1.5); }
         }
+        audio { filter: invert(0.8) hue-rotate(90deg); width: 100%; }
       `}</style>
 
       <div style={s.header}>
@@ -203,8 +232,8 @@ export default function MappaPage() {
           />
           <text x={130} y={510} fill="#1e3a5f" fontSize={11} opacity={0.6}
             fontFamily="Georgia, serif" transform="rotate(-32, 130, 510)">Sesia</text>
-          {Object.entries(ZONE_COORDS).slice(0, 6).map(([nome, [px, py]]) => (
-            <text key={nome} x={px*1000} y={py*600-18}
+          {Object.entries(ZONE_COORDS).map(([nome, [px, py]]) => (
+            <text key={nome} x={px*1000} y={py*600 - 18}
               fill="#3a4a3a" fontSize={10} fontFamily="Georgia, serif"
               textAnchor="middle" opacity={0.5}>{nome}</text>
           ))}
@@ -292,11 +321,12 @@ const s: Record<string, React.CSSProperties> = {
   panelAutore: { margin: 0, fontSize: 12, color: "#c8a96e", letterSpacing: 2 },
   panelRight: { width: 280, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" },
   mediaImg: { width: "100%", height: 180, objectFit: "cover", borderRadius: 2, border: "1px solid #2a3a2a", display: "block" },
+  mediaFallback: { width: "100%", height: 180, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #2a3a2a", color: "#3a4a3a", fontSize: 12 },
   mediaFrame: { width: "100%", height: 180, border: "1px solid #2a3a2a", borderRadius: 2, background: "#000" },
-  audioBox: { width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, border: "1px solid #2a3a2a", borderRadius: 2, padding: "14px 20px" },
+  audioBox: { width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 10, border: "1px solid #2a3a2a", borderRadius: 2, padding: "16px 20px" },
   audioWaveform: { display: "flex", alignItems: "flex-end", gap: 4, height: 50 },
   audioBar: { width: 6, background: "#4a7a4a", borderRadius: 2, animation: "pulse 1.4s ease-in-out infinite" },
-  audioFrame: { width: "100%", height: 60, border: "none", background: "transparent" },
+  audioPlayer: { borderRadius: 2 },
   audioLabel: { margin: 0, fontSize: 10, color: "#4a6a4a", letterSpacing: 3, textTransform: "uppercase" },
   footer: { padding: "10px 40px", fontSize: 11, letterSpacing: 3, color: "#2a4a2a", textAlign: "right", borderTop: "1px solid #1a2a1a" },
 };
